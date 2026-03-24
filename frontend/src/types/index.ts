@@ -41,6 +41,8 @@ export interface StyleConfig {
   aspect_ratio?: "16:9" | "4:3";
   /** AI 生成的全局风格锚定提示词，首次出图时自动生成并缓存 */
   global_style_prompt?: string;
+  /** AI 生成的统一底图模板路径（相对 uploads），所有页面共用 */
+  background_template?: string;
 }
 
 export interface TaskInfo {

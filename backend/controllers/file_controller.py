@@ -63,9 +63,22 @@ def analyze_file(ref_id):
         return error("File not found", 404)
 
     abs_path = os.path.join(current_app.config["UPLOAD_FOLDER"], ref.file_path)
+    if not os.path.isfile(abs_path):
+        return error("上传的文件不存在，请重新上传", 404)
+
     from services.ai_service import get_ai_service
     ai = get_ai_service()
-    result = ai.analyze_document(abs_path, ref.file_type)
+    try:
+        result = ai.analyze_document(abs_path, ref.file_type)
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error("文档分析失败: %s", e)
+        msg = str(e)
+        if "timed out" in msg.lower() or "timeout" in msg.lower():
+            return error("AI 服务连接超时，请检查网络后重试", 504)
+        if "api key" in msg.lower() or "auth" in msg.lower():
+            return error("AI API 认证失败，请检查 API Key 配置", 401)
+        return error(f"文档分析失败：{msg[:200]}", 502)
 
     ref.analysis_result = result
     ref.status = "analyzed"

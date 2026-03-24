@@ -172,6 +172,104 @@ def get_image_prompt(page_title: str, page_content: str, relationship: str,
     return "".join(parts)
 
 
+BACKGROUND_TEMPLATE_PROMPT = """\
+生成一张 {aspect_ratio} 比例的 PPT 背景模板图片。
+
+要求：
+1. 这是一张纯背景模板，**不包含任何文字、标题、正文内容**
+2. 可以包含装饰性元素：渐变色块、几何图形、线条、光效、纹理等
+3. 页面上方留出标题区域（约占 15% 高度），中间和下方留出内容区域
+4. 装饰元素不要遮挡内容区域，集中在边角和边缘
+5. 整体风格统一、专业、美观
+
+{style_instructions}
+
+重要：绝对不要在图片上放任何文字！只要背景和装饰元素。
+"""
+
+
+def get_background_template_prompt(style_config: dict) -> str:
+    aspect = style_config.get("aspect_ratio", "16:9")
+    lines: list[str] = []
+
+    global_style = style_config.get("global_style_prompt")
+    if global_style:
+        lines.append(f"【全局视觉规范 — 必须严格遵守】\n{global_style}")
+
+    if style_config.get("style_description"):
+        lines.append(f"风格要求：{style_config['style_description']}")
+
+    preset = style_config.get("preset")
+    if preset:
+        preset_styles = {
+            "business": "商务专业风格，深蓝色系，简洁大方",
+            "academic": "学术风格，浅灰白底，严谨规范",
+            "tech": "科技风格，深色渐变背景，霓虹蓝/紫点缀",
+            "minimal": "极简风格，大量留白，少量色彩",
+            "creative": "创意风格，色彩丰富，几何装饰",
+            "education": "教育风格，温暖色调，柔和渐变",
+        }
+        lines.append(f"预设风格：{preset_styles.get(preset, preset)}")
+
+    if not lines:
+        lines.append("请设计一套专业美观的背景模板，配色协调，适合商务演示。")
+
+    return BACKGROUND_TEMPLATE_PROMPT.format(
+        aspect_ratio=aspect,
+        style_instructions="\n".join(lines),
+    )
+
+
+CONTENT_LAYER_PROMPT = """\
+你是一名专业的 PPT 内容排版设计师。
+
+我会提供一张 PPT 背景模板图片。请在这张背景上排版以下内容，生成完整的 PPT 页面：
+
+{page_type_hint}
+页面标题：{title}
+页面内容：{content}
+{relationship_hint}
+
+排版要求：
+1. **必须保留背景模板的所有元素**（背景色、渐变、装饰图形等），不要修改背景
+2. 文字颜色要与背景形成良好对比，确保清晰可读
+3. 标题放在页面上方，字号大、加粗
+4. 内容区域合理排版，使用适当的层次结构
+5. 可以添加图标、图表、示意图来增强信息表达
+6. 所有文字必须精确渲染，不允许出现乱码或模糊文字
+
+{style_hint}
+"""
+
+
+def get_content_layer_prompt(page_title: str, page_content: str, relationship: str,
+                             style_config: dict, is_cover: bool = False,
+                             is_ending: bool = False) -> str:
+    if is_cover:
+        page_type_hint = "这是封面页，需要大标题居中，副标题在下方，简洁大气。"
+    elif is_ending:
+        page_type_hint = "这是结尾页/感谢页，简洁有力，可以有简短的总结语。"
+    else:
+        page_type_hint = ""
+
+    visual_hint = RELATIONSHIP_VISUAL_MAP.get(relationship)
+    relationship_hint = (
+        f"内容关系为「{relationship}」，视觉呈现要求：{visual_hint}"
+        if visual_hint else ""
+    )
+
+    global_style = style_config.get("global_style_prompt", "")
+    style_hint = f"【全局视觉规范】\n{global_style}" if global_style else ""
+
+    return CONTENT_LAYER_PROMPT.format(
+        page_type_hint=page_type_hint,
+        title=page_title,
+        content=page_content,
+        relationship_hint=relationship_hint,
+        style_hint=style_hint,
+    )
+
+
 REPLACE_TEXT_PROMPT = """你是一名 PPT 页面编辑专家。
 用户要求在现有 PPT 页面图片上进行文字替换：
 - 将「{old_text}」替换为「{new_text}」

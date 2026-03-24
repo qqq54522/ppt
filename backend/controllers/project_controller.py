@@ -93,6 +93,27 @@ def generate_outline(project_id):
     return success(project.to_dict())
 
 
+@project_bp.route("/<project_id>/generate/background", methods=["POST"])
+def generate_background(project_id):
+    from services.ai_service import get_ai_service
+    project = db.session.get(Project, project_id)
+    if not project:
+        return error("Project not found", 404)
+
+    ai = get_ai_service()
+    try:
+        bg_path = ai.generate_background_template(project)
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error("底图生成失败: %s", e)
+        msg = str(e)
+        if "timed out" in msg.lower() or "timeout" in msg.lower():
+            return error("AI 服务连接超时，请检查网络后重试", 504)
+        return error(f"底图生成失败：{msg[:200]}", 502)
+
+    return success(project.to_dict())
+
+
 @project_bp.route("/<project_id>/generate/images", methods=["POST"])
 def generate_images(project_id):
     project = db.session.get(Project, project_id)

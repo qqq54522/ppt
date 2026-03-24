@@ -1,6 +1,6 @@
 import { useState, useRef } from "react";
 import { useNavigate } from "react-router-dom";
-import { Upload, Sparkles, List, FileText, Loader2 } from "lucide-react";
+import { Upload, Sparkles, List, FileText, Loader2, AlertCircle } from "lucide-react";
 import { useProjectStore } from "../store/useProjectStore";
 import { uploadFile, analyzeFile } from "../api/endpoints";
 
@@ -12,6 +12,7 @@ export default function Home() {
   const [outlineText, setOutlineText] = useState("");
   const [uploadedFile, setUploadedFile] = useState<{ id: string; name: string } | null>(null);
   const [analyzing, setAnalyzing] = useState(false);
+  const [uploadError, setUploadError] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
   const navigate = useNavigate();
   const { createProject, updateProject, isLoading } = useProjectStore();
@@ -26,14 +27,23 @@ export default function Home() {
     const file = e.target.files?.[0];
     if (!file) return;
     setAnalyzing(true);
+    setUploadError("");
+    setUploadedFile(null);
     try {
-      const ref = await uploadFile(file);
-      const analyzed = await analyzeFile(ref.id);
+      const ref = await uploadFile(file, undefined, true);
+      const analyzed = await analyzeFile(ref.id, true);
       setUploadedFile({ id: analyzed.id, name: file.name });
-    } catch {
-      /* handled by global error */
+    } catch (err: unknown) {
+      const axiosErr = err as { response?: { data?: { message?: string } }; message?: string };
+      const detail = axiosErr?.response?.data?.message || axiosErr?.message || "";
+      setUploadError(
+        detail
+          ? `分析失败：${detail}`
+          : "文档上传或分析失败，请检查后端服务是否运行，然后重试"
+      );
     } finally {
       setAnalyzing(false);
+      if (fileRef.current) fileRef.current.value = "";
     }
   }
 
@@ -90,13 +100,26 @@ export default function Home() {
           {tab === "upload" && (
             <div>
               <div
-                onClick={() => fileRef.current?.click()}
-                className="border-2 border-dashed border-slate-300 rounded-xl p-10 text-center cursor-pointer hover:border-primary-400 hover:bg-primary-50/30 transition-colors"
+                onClick={() => !analyzing && fileRef.current?.click()}
+                className={`border-2 border-dashed rounded-xl p-10 text-center transition-colors ${
+                  uploadError
+                    ? "border-red-300 bg-red-50/30"
+                    : analyzing
+                      ? "border-primary-300 bg-primary-50/30 cursor-wait"
+                      : "border-slate-300 cursor-pointer hover:border-primary-400 hover:bg-primary-50/30"
+                }`}
               >
                 {analyzing ? (
                   <div className="flex flex-col items-center gap-2">
                     <Loader2 className="animate-spin text-primary-500" size={32} />
                     <p className="text-slate-500">AI 正在分析文档...</p>
+                    <p className="text-xs text-slate-400">大文件可能需要较长时间，请耐心等待</p>
+                  </div>
+                ) : uploadError ? (
+                  <div className="flex flex-col items-center gap-2">
+                    <AlertCircle className="text-red-400" size={32} />
+                    <p className="text-sm text-red-600">{uploadError}</p>
+                    <p className="text-xs text-slate-400 mt-1">点击重新上传</p>
                   </div>
                 ) : uploadedFile ? (
                   <div className="flex flex-col items-center gap-2">

@@ -40,6 +40,13 @@ export async function generateOutline(projectId: string) {
   return res.data.data;
 }
 
+export async function generateBackground(projectId: string) {
+  const res = await apiClient.post<ApiResponse<Project>>(
+    `/api/projects/${projectId}/generate/background`
+  );
+  return res.data.data;
+}
+
 export async function generateImages(projectId: string, pageIds?: string[]) {
   const res = await apiClient.post<ApiResponse<{ task_id: string }>>(
     `/api/projects/${projectId}/generate/images`,
@@ -128,17 +135,21 @@ export async function reorderPages(projectId: string, order: string[]) {
 
 // ── Files ──
 
-export async function uploadFile(file: File, projectId?: string) {
+export async function uploadFile(file: File, projectId?: string, silent = false) {
   const form = new FormData();
   form.append("file", file);
   if (projectId) form.append("project_id", projectId);
-  const res = await apiClient.post<ApiResponse<ReferenceFile>>("/api/files/upload", form);
+  const res = await apiClient.post<ApiResponse<ReferenceFile>>("/api/files/upload", form, {
+    _silentError: silent,
+  } as Record<string, unknown>);
   return res.data.data;
 }
 
-export async function analyzeFile(refId: string) {
+export async function analyzeFile(refId: string, silent = false) {
   const res = await apiClient.post<ApiResponse<ReferenceFile>>(
-    `/api/files/${refId}/analyze`
+    `/api/files/${refId}/analyze`,
+    {},
+    { _silentError: silent } as Record<string, unknown>,
   );
   return res.data.data;
 }

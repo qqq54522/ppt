@@ -6,15 +6,17 @@ import re
 from io import BytesIO
 from pathlib import Path
 
-from openai import APIStatusError, OpenAI
+import httpx
+from openai import APIStatusError, APITimeoutError, APIConnectionError, OpenAI
 from PIL import Image
-from tenacity import retry, stop_after_attempt, wait_exponential
+from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from config import Config
 from services.prompts import (
     get_outline_prompt, get_image_prompt,
     get_replace_text_prompt, get_mask_edit_prompt,
     get_global_style_gen_messages,
+    get_background_template_prompt, get_content_layer_prompt,
     DOCUMENT_ANALYSIS_PROMPT, IMAGE_GEN_SYSTEM_PROMPT,
 )
 from utils.path_utils import get_project_images_folder
@@ -36,6 +38,7 @@ class AIService:
         self.client = OpenAI(
             api_key=Config.OPENAI_API_KEY,
             base_url=Config.OPENAI_API_BASE,
+            timeout=httpx.Timeout(120, connect=30),
         )
         self.text_model = Config.TEXT_MODEL
         self.image_model = Config.IMAGE_MODEL
@@ -63,7 +66,11 @@ class AIService:
 
     # ── Text generation (analysis model) ──
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=2, max=10))
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(min=4, max=30),
+        retry=retry_if_exception_type((APITimeoutError, APIConnectionError)),
+    )
     def _chat(self, messages: list[dict], model: str | None = None) -> str:
         resp = self.client.chat.completions.create(
             model=model or self.text_model,
@@ -354,23 +361,70 @@ class AIService:
             logger.warning("Failed to analyze reference images: %s", e)
             return None
 
+    def generate_background_template(self, project) -> str:
+        """生成统一底图模板并保存到项目，返回相对路径。"""
+        from models import db
+
+        style_config = self._ensure_global_style_prompt(project)
+        prompt = get_background_template_prompt(style_config)
+        aspect = style_config.get("aspect_ratio", "16:9")
+
+        img_bytes = self._generate_image_api(prompt, aspect)
+        if not img_bytes:
+            raise RuntimeError("生成底图模板失败")
+
+        filename = f"bg_template_{os.urandom(4).hex()}.png"
+        rel_path = self._save_image(img_bytes, project.id, filename)
+
+        style_config["background_template"] = rel_path
+        project.style_config = style_config
+        db.session.commit()
+        logger.info("已生成底图模板: %s", rel_path)
+        return rel_path
+
+    def _load_background_template(self, style_config: dict) -> bytes | None:
+        """加载底图模板的原始字节。"""
+        from utils.path_utils import UPLOAD_FOLDER
+
+        bg_path = style_config.get("background_template")
+        if not bg_path:
+            return None
+        abs_path = os.path.join(UPLOAD_FOLDER, bg_path)
+        if not os.path.isfile(abs_path):
+            logger.warning("底图模板文件不存在: %s", abs_path)
+            return None
+        with open(abs_path, "rb") as f:
+            return f.read()
+
     def generate_slide_image(self, project, page) -> str:
         style_config = self._ensure_global_style_prompt(project)
         is_cover = page.page_number == 1
         total = len(project.pages)
         is_ending = page.page_number == total
-
-        prompt = get_image_prompt(
-            page.title, page.content, page.relationship_type,
-            style_config, is_cover=is_cover, is_ending=is_ending,
-        )
-
-        ref_images = style_config.get("reference_images", [])
-        if ref_images and not style_config.get("global_style_prompt"):
-            prompt = self._enrich_prompt_with_ref_description(prompt, ref_images, style_config)
-
         aspect = style_config.get("aspect_ratio", "16:9")
-        img_bytes = self._generate_image_api(prompt, aspect)
+
+        bg_bytes = self._load_background_template(style_config)
+
+        if bg_bytes:
+            prompt = get_content_layer_prompt(
+                page.title, page.content, page.relationship_type,
+                style_config, is_cover=is_cover, is_ending=is_ending,
+            )
+            img_bytes = self._generate_image_api(
+                prompt, aspect, input_image_bytes=[bg_bytes],
+            )
+        else:
+            prompt = get_image_prompt(
+                page.title, page.content, page.relationship_type,
+                style_config, is_cover=is_cover, is_ending=is_ending,
+            )
+            ref_images = style_config.get("reference_images", [])
+            if ref_images and not style_config.get("global_style_prompt"):
+                prompt = self._enrich_prompt_with_ref_description(
+                    prompt, ref_images, style_config,
+                )
+            img_bytes = self._generate_image_api(prompt, aspect)
+
         if not img_bytes:
             raise RuntimeError(f"Failed to generate image for page {page.page_number}")
 
