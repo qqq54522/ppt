@@ -91,9 +91,14 @@ export async function deletePage(projectId: string, pageId: string) {
   await apiClient.delete(`/api/projects/${projectId}/pages/${pageId}`);
 }
 
-export async function regeneratePageImage(projectId: string, pageId: string) {
+export async function regeneratePageImage(
+  projectId: string,
+  pageId: string,
+  layer: "all" | "visual" | "text" = "all"
+) {
   const res = await apiClient.post<ApiResponse<Page>>(
-    `/api/projects/${projectId}/pages/${pageId}/regenerate`
+    `/api/projects/${projectId}/pages/${pageId}/regenerate`,
+    { layer }
   );
   return res.data.data;
 }
@@ -121,6 +126,14 @@ export async function maskEdit(
   const res = await apiClient.post<ApiResponse<Page>>(
     `/api/projects/${projectId}/pages/${pageId}/mask-edit`,
     { region, prompt }
+  );
+  return res.data.data;
+}
+
+export async function renderHtml(projectId: string, pageId: string, htmlContent: string) {
+  const res = await apiClient.post<ApiResponse<Page>>(
+    `/api/projects/${projectId}/pages/${pageId}/render-html`,
+    { html_content: htmlContent }
   );
   return res.data.data;
 }

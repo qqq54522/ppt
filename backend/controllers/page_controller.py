@@ -53,14 +53,31 @@ def delete_page(project_id, page_id):
 
 @page_bp.route("/<page_id>/regenerate", methods=["POST"])
 def regenerate_page_image(project_id, page_id):
+    """重新生成页面。支持 layer 参数选择重新生成的层。
+
+    POST body (可选):
+      - layer: "all" (默认) | "visual" | "text"
+        - all: 重新生成视觉层+文字层（完整重做）
+        - visual: 仅重新生成视觉层图片，保留现有文字层 HTML
+        - text: 仅重新生成文字层 HTML，保留现有视觉层图片
+    """
     from services.ai_service import get_ai_service
     page = db.session.get(Page, page_id)
     if not page or page.project_id != project_id:
         return error("Page not found", 404)
 
+    data = request.get_json(silent=True) or {}
+    layer = data.get("layer", "all")
+
     ai = get_ai_service()
     project = page.project
-    image_path = ai.generate_slide_image(project, page)
+
+    if layer == "visual":
+        image_path = ai.regenerate_visual_only(project, page)
+    elif layer == "text":
+        image_path = ai.regenerate_text_only(project, page)
+    else:
+        image_path = ai.generate_slide_image(project, page)
 
     if page.image_path:
         versions = page.image_versions or []
@@ -121,6 +138,48 @@ def mask_edit(project_id, page_id):
     versions.append(page.image_path)
     page.image_versions = versions
     page.image_path = new_image_path
+    db.session.commit()
+    return success(page.to_dict())
+
+
+@page_bp.route("/<page_id>/render-html", methods=["POST"])
+def render_html(project_id, page_id):
+    """用当前 html_content 重新渲染截图（前端编辑 HTML 后调用）。
+
+    方案C：优先使用页面独立的视觉层图片作为背景，回退到全局底图模板。
+    """
+    from services.render_service import render_slide_for_project
+    import os
+
+    page = db.session.get(Page, page_id)
+    if not page or page.project_id != project_id:
+        return error("Page not found", 404)
+
+    data = request.get_json() or {}
+    html = data.get("html_content", page.html_content or "")
+    if not html.strip():
+        return error("HTML content is empty", 400)
+
+    page.html_content = html
+
+    project = page.project
+    bg_path = page.visual_image_path or (project.style_config or {}).get("background_template")
+    filename = f"page_{page.page_number}_{os.urandom(4).hex()}.png"
+
+    try:
+        rel_path = render_slide_for_project(
+            html, project.id, filename, bg_path=bg_path,
+        )
+    except Exception as e:
+        return error(f"渲染失败：{str(e)[:200]}", 500)
+
+    if page.image_path:
+        versions = page.image_versions or []
+        versions.append(page.image_path)
+        page.image_versions = versions
+
+    page.image_path = rel_path
+    page.status = "generated"
     db.session.commit()
     return success(page.to_dict())
 

@@ -12,6 +12,8 @@ class Page(db.Model):
     title = db.Column(db.String(500), default="")
     content = db.Column(db.Text, default="")
     relationship_type = db.Column(db.String(30), default="none")
+    html_content = db.Column(db.Text, default="")
+    visual_image_path = db.Column(db.String(500), default="")
     image_path = db.Column(db.String(500), default="")
     image_versions = db.Column(db.JSON, default=list)
     status = db.Column(db.String(20), default="pending")
@@ -25,6 +27,8 @@ class Page(db.Model):
             "title": self.title,
             "content": self.content,
             "relationship_type": self.relationship_type,
+            "html_content": self.html_content or "",
+            "visual_image_path": self.visual_image_path or "",
             "image_path": self.image_path,
             "image_versions": self.image_versions or [],
             "status": self.status,

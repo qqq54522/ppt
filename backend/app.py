@@ -15,6 +15,21 @@ from config import Config
 from models import db
 
 
+def _safe_add_column(app: Flask, table: str, column: str, col_type: str):
+    """Add a column if it doesn't already exist (SQLite-safe)."""
+    import sqlite3
+    db_path = app.config["SQLALCHEMY_DATABASE_URI"].replace("sqlite:///", "")
+    try:
+        conn = sqlite3.connect(db_path)
+        cols = [row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()]
+        if column not in cols:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")
+            conn.commit()
+        conn.close()
+    except Exception:
+        pass
+
+
 def create_app() -> Flask:
     app = Flask(__name__, instance_relative_config=True)
     app.config.from_object(Config)
@@ -50,6 +65,8 @@ def create_app() -> Flask:
 
     with app.app_context():
         db.create_all()
+        _safe_add_column(app, "pages", "html_content", "TEXT DEFAULT ''")
+        _safe_add_column(app, "pages", "visual_image_path", "VARCHAR(500) DEFAULT ''")
 
     @app.route("/health")
     def health():

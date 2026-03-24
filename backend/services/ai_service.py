@@ -17,6 +17,7 @@ from services.prompts import (
     get_replace_text_prompt, get_mask_edit_prompt,
     get_global_style_gen_messages,
     get_background_template_prompt, get_content_layer_prompt,
+    get_html_slide_prompt, get_visual_layer_prompt,
     DOCUMENT_ANALYSIS_PROMPT, IMAGE_GEN_SYSTEM_PROMPT,
 )
 from utils.path_utils import get_project_images_folder
@@ -396,40 +397,132 @@ class AIService:
         with open(abs_path, "rb") as f:
             return f.read()
 
-    def generate_slide_image(self, project, page) -> str:
+    def generate_visual_layer(self, project, page) -> str:
+        """方案C视觉层：AI 生图生成每页独立的视觉背景（背景+装饰+配图，不含文字）。"""
         style_config = self._ensure_global_style_prompt(project)
         is_cover = page.page_number == 1
         total = len(project.pages)
         is_ending = page.page_number == total
+
+        prompt = get_visual_layer_prompt(
+            page.title, page.content, page.relationship_type,
+            style_config, is_cover=is_cover, is_ending=is_ending,
+        )
         aspect = style_config.get("aspect_ratio", "16:9")
 
-        bg_bytes = self._load_background_template(style_config)
-
-        if bg_bytes:
-            prompt = get_content_layer_prompt(
-                page.title, page.content, page.relationship_type,
-                style_config, is_cover=is_cover, is_ending=is_ending,
-            )
-            img_bytes = self._generate_image_api(
-                prompt, aspect, input_image_bytes=[bg_bytes],
-            )
-        else:
-            prompt = get_image_prompt(
-                page.title, page.content, page.relationship_type,
-                style_config, is_cover=is_cover, is_ending=is_ending,
-            )
-            ref_images = style_config.get("reference_images", [])
-            if ref_images and not style_config.get("global_style_prompt"):
-                prompt = self._enrich_prompt_with_ref_description(
-                    prompt, ref_images, style_config,
-                )
-            img_bytes = self._generate_image_api(prompt, aspect)
-
+        img_bytes = self._generate_image_api(prompt, aspect)
         if not img_bytes:
-            raise RuntimeError(f"Failed to generate image for page {page.page_number}")
+            logger.warning(
+                "视觉层生成失败（page %d），将回退使用全局底图模板",
+                page.page_number,
+            )
+            return ""
 
+        filename = f"visual_{page.page_number}_{os.urandom(4).hex()}.png"
+        rel_path = self._save_image(img_bytes, project.id, filename)
+        logger.info("已生成视觉层: %s", rel_path)
+        return rel_path
+
+    def generate_slide_html(self, project, page) -> str:
+        """方案C文字层：AI 生成透明背景的 HTML 排版代码（标题、正文、数据）。"""
+        style_config = self._ensure_global_style_prompt(project)
+        is_cover = page.page_number == 1
+        total = len(project.pages)
+        is_ending = page.page_number == total
+
+        messages = get_html_slide_prompt(
+            page.title, page.content, page.relationship_type,
+            style_config, is_cover=is_cover, is_ending=is_ending,
+        )
+        raw = self._chat(messages)
+
+        html = self._extract_html(raw)
+        return html
+
+    @staticmethod
+    def _extract_html(raw: str) -> str:
+        """从 AI 回复中提取纯 HTML 片段，去掉 markdown 代码块包裹。"""
+        import re as _re
+        match = _re.search(r"```(?:html)?\s*([\s\S]*?)```", raw)
+        if match:
+            return match.group(1).strip()
+        stripped = raw.strip()
+        if stripped.startswith("<"):
+            return stripped
+        start = stripped.find("<")
+        if start >= 0:
+            return stripped[start:]
+        return stripped
+
+    def generate_slide_image(self, project, page) -> str:
+        """方案C混合流程：视觉层(AI生图) + 文字层(HTML) → Playwright 合成截图。
+
+        1. 生成视觉层图片（背景+装饰+配图，不含文字）
+        2. 生成文字层 HTML（标题、正文、数据，透明背景）
+        3. 以视觉层图片为背景 + HTML 文字层 → Playwright 截图合成
+        """
+        from models import db
+        from services.render_service import render_slide_for_project
+
+        style_config = self._ensure_global_style_prompt(project)
+
+        visual_path = self.generate_visual_layer(project, page)
+        page.visual_image_path = visual_path
+        db.session.commit()
+
+        html = self.generate_slide_html(project, page)
+        page.html_content = html
+        db.session.commit()
+
+        bg_path = visual_path if visual_path else style_config.get("background_template")
         filename = f"page_{page.page_number}_{os.urandom(4).hex()}.png"
-        return self._save_image(img_bytes, project.id, filename)
+        rel_path = render_slide_for_project(
+            html, project.id, filename, bg_path=bg_path,
+        )
+        return rel_path
+
+    def regenerate_visual_only(self, project, page) -> str:
+        """仅重新生成视觉层，保留现有文字层 HTML，重新合成。"""
+        from models import db
+        from services.render_service import render_slide_for_project
+
+        style_config = self._ensure_global_style_prompt(project)
+
+        visual_path = self.generate_visual_layer(project, page)
+        page.visual_image_path = visual_path
+        db.session.commit()
+
+        html = page.html_content or ""
+        if not html.strip():
+            html = self.generate_slide_html(project, page)
+            page.html_content = html
+            db.session.commit()
+
+        bg_path = visual_path if visual_path else style_config.get("background_template")
+        filename = f"page_{page.page_number}_{os.urandom(4).hex()}.png"
+        rel_path = render_slide_for_project(
+            html, project.id, filename, bg_path=bg_path,
+        )
+        return rel_path
+
+    def regenerate_text_only(self, project, page) -> str:
+        """仅重新生成文字层 HTML，保留现有视觉层，重新合成。"""
+        from models import db
+        from services.render_service import render_slide_for_project
+
+        style_config = self._ensure_global_style_prompt(project)
+
+        html = self.generate_slide_html(project, page)
+        page.html_content = html
+        db.session.commit()
+
+        visual_path = page.visual_image_path or ""
+        bg_path = visual_path if visual_path else style_config.get("background_template")
+        filename = f"page_{page.page_number}_{os.urandom(4).hex()}.png"
+        rel_path = render_slide_for_project(
+            html, project.id, filename, bg_path=bg_path,
+        )
+        return rel_path
 
     def _enrich_prompt_with_ref_description(self, prompt: str, ref_images: list[str], style_config: dict) -> str:
         from utils.path_utils import UPLOAD_FOLDER

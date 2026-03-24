@@ -1,12 +1,13 @@
 import { useEffect, useState, useRef, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import {
-  ArrowLeft, RefreshCw, Type, Scissors,
+  ArrowLeft, RefreshCw, Type, Scissors, Code2,
   ChevronLeft, ChevronRight, Loader2, FileDown, Image as ImageIcon,
+  Layers, ImagePlus, FileText,
 } from "lucide-react";
 import { useProjectStore } from "../store/useProjectStore";
 import {
-  regeneratePageImage, replaceText, maskEdit,
+  regeneratePageImage, replaceText, maskEdit, renderHtml,
   exportPdf, exportImagesZip,
 } from "../api/endpoints";
 import { getImageUrl } from "../api/client";
@@ -59,6 +60,8 @@ export default function SlidePreview() {
   const [pageLoading, setPageLoading] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
   const [showRegenConfirm, setShowRegenConfirm] = useState(false);
+  const [showHtmlEditor, setShowHtmlEditor] = useState(false);
+  const [editingHtml, setEditingHtml] = useState("");
   const canvasRef = useRef<HTMLDivElement>(null);
   const imgRef = useRef<HTMLImageElement>(null);
   const pollRef = useRef<ReturnType<typeof setInterval>>();
@@ -78,23 +81,35 @@ export default function SlidePreview() {
   async function handleGenerateAll() {
     if (!projectId) return;
     const taskId = await generateImages();
+    let polling = false;
     pollRef.current = setInterval(async () => {
-      const task = await pollTask(taskId);
-      if (task.status === "completed" || task.status === "failed") {
-        clearInterval(pollRef.current);
+      if (polling) return;
+      polling = true;
+      try {
+        const task = await pollTask(taskId);
+        if (task.status !== "completed" && task.status !== "failed") {
+          await syncProject(projectId);
+        }
+        if (task.status === "completed" || task.status === "failed") {
+          clearInterval(pollRef.current);
+          await syncProject(projectId);
+        }
+      } finally {
+        polling = false;
       }
     }, 2000);
   }
 
-  async function handleRegenerate(page: Page) {
+  async function handleRegenerate(page: Page, layer: "all" | "visual" | "text" = "all") {
     if (!projectId) return;
     setPageLoading(page.id);
     try {
-      await regeneratePageImage(projectId, page.id);
+      await regeneratePageImage(projectId, page.id, layer);
       await syncProject(projectId);
     } catch (err) {
       console.error("Regenerate failed:", err);
-      setError("重新生成失败，请重试");
+      const layerName = layer === "visual" ? "视觉层" : layer === "text" ? "文字层" : "页面";
+      setError(`重新生成${layerName}失败，请重试`);
     } finally {
       setPageLoading(null);
     }
@@ -163,6 +178,29 @@ export default function SlidePreview() {
     } catch (err) {
       console.error("Mask edit failed:", err);
       setError("遮罩重绘失败，请重试");
+    } finally {
+      setPageLoading(null);
+    }
+  }
+
+  function handleOpenHtmlEditor() {
+    if (!currentPage) return;
+    setEditingHtml(currentPage.html_content || "");
+    setShowHtmlEditor(true);
+    setShowReplace(false);
+    setShowMask(false);
+  }
+
+  async function handleRenderHtml() {
+    if (!projectId || !currentPage) return;
+    setPageLoading(currentPage.id);
+    try {
+      await renderHtml(projectId, currentPage.id, editingHtml);
+      await syncProject(projectId);
+      setShowHtmlEditor(false);
+    } catch (err) {
+      console.error("Render HTML failed:", err);
+      setError("HTML 渲染失败，请重试");
     } finally {
       setPageLoading(null);
     }
@@ -329,20 +367,53 @@ export default function SlidePreview() {
                 </button>
               </div>
 
+              {/* Layer info badge */}
+              {currentPage.image_path && currentPage.visual_image_path && (
+                <div className="flex items-center gap-2 mt-3">
+                  <span className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-full bg-emerald-100 text-emerald-700">
+                    <Layers size={12} /> 混合方案：视觉层 + 文字层
+                  </span>
+                </div>
+              )}
+
               {/* Toolbar */}
               {currentPage.image_path && (
-                <div className="flex items-center gap-2 mt-4">
-                  <button onClick={() => { setShowReplace(true); setShowMask(false); }}
+                <div className="flex flex-wrap items-center gap-2 mt-3">
+                  <div className="flex items-center gap-1 px-2 py-1 rounded-lg bg-white border border-slate-200">
+                    <span className="text-xs text-slate-400 mr-1">分层操作</span>
+                    <button
+                      onClick={() => handleRegenerate(currentPage, "visual")}
+                      disabled={pageLoading === currentPage.id}
+                      className="px-2.5 py-1.5 rounded-md text-xs font-medium text-purple-700 bg-purple-50 hover:bg-purple-100 disabled:opacity-40 flex items-center gap-1 transition-colors"
+                      title="仅重新生成视觉层（背景+装饰+配图），保留现有文字"
+                    >
+                      <ImagePlus size={13} /> 换视觉
+                    </button>
+                    <button
+                      onClick={() => handleRegenerate(currentPage, "text")}
+                      disabled={pageLoading === currentPage.id}
+                      className="px-2.5 py-1.5 rounded-md text-xs font-medium text-blue-700 bg-blue-50 hover:bg-blue-100 disabled:opacity-40 flex items-center gap-1 transition-colors"
+                      title="仅重新生成文字层排版，保留现有视觉背景"
+                    >
+                      <FileText size={13} /> 换文字
+                    </button>
+                  </div>
+                  <div className="w-px h-6 bg-slate-200" />
+                  <button onClick={handleOpenHtmlEditor}
+                    className="px-3 py-2 rounded-lg text-sm border border-slate-300 text-slate-600 hover:bg-white flex items-center gap-1">
+                    <Code2 size={14} /> 编辑排版
+                  </button>
+                  <button onClick={() => { setShowReplace(true); setShowMask(false); setShowHtmlEditor(false); }}
                     className="px-3 py-2 rounded-lg text-sm border border-slate-300 text-slate-600 hover:bg-white flex items-center gap-1">
                     <Type size={14} /> 替换文字
                   </button>
-                  <button onClick={() => { setShowMask(true); setShowReplace(false); }}
+                  <button onClick={() => { setShowMask(true); setShowReplace(false); setShowHtmlEditor(false); }}
                     className="px-3 py-2 rounded-lg text-sm border border-slate-300 text-slate-600 hover:bg-white flex items-center gap-1">
                     <Scissors size={14} /> 遮罩重绘
                   </button>
                   <button onClick={() => handleRegenerate(currentPage)} disabled={pageLoading === currentPage.id}
-                    className="px-3 py-2 rounded-lg text-sm border border-slate-300 text-slate-600 hover:bg-white flex items-center gap-1">
-                    <RefreshCw size={14} /> 重新生成
+                    className="px-3 py-2 rounded-lg text-sm border border-orange-300 text-orange-600 hover:bg-orange-50 flex items-center gap-1">
+                    <RefreshCw size={14} /> 全部重做
                   </button>
                 </div>
               )}
@@ -389,6 +460,41 @@ export default function SlidePreview() {
               className="px-3 py-2 rounded-lg text-sm border border-slate-300 text-slate-600">取消</button>
             <button onClick={handleMaskEdit} disabled={!maskPrompt || pageLoading !== null}
               className="px-3 py-2 rounded-lg text-sm bg-primary-600 text-white hover:bg-primary-700 disabled:opacity-40">重绘</button>
+          </div>
+        </div>
+      )}
+
+      {/* HTML Editor modal */}
+      {showHtmlEditor && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50" onClick={() => setShowHtmlEditor(false)}>
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-4xl max-h-[85vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200">
+              <h3 className="text-lg font-bold text-slate-800">编辑页面排版 (HTML)</h3>
+              <span className="text-xs text-slate-400">修改后点击"重新渲染"即可预览效果</span>
+            </div>
+            <div className="flex-1 overflow-hidden p-4">
+              <textarea
+                value={editingHtml}
+                onChange={(e) => setEditingHtml(e.target.value)}
+                spellCheck={false}
+                className="w-full h-full min-h-[400px] font-mono text-sm bg-slate-900 text-green-300 p-4 rounded-lg border-0 resize-none focus:outline-none focus:ring-2 focus:ring-primary-500"
+                placeholder="HTML 内容..."
+              />
+            </div>
+            <div className="flex justify-end gap-2 px-6 py-4 border-t border-slate-200">
+              <button onClick={() => setShowHtmlEditor(false)}
+                className="px-4 py-2 rounded-lg text-sm border border-slate-300 text-slate-600">
+                取消
+              </button>
+              <button
+                onClick={handleRenderHtml}
+                disabled={!editingHtml.trim() || pageLoading !== null}
+                className="px-4 py-2 rounded-lg text-sm bg-primary-600 text-white hover:bg-primary-700 disabled:opacity-40 flex items-center gap-1"
+              >
+                {pageLoading ? <Loader2 className="animate-spin" size={14} /> : <RefreshCw size={14} />}
+                重新渲染
+              </button>
+            </div>
           </div>
         </div>
       )}

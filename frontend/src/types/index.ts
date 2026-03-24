@@ -19,6 +19,10 @@ export interface Page {
   title: string;
   content: string;
   relationship_type: RelationshipType;
+  html_content: string;
+  /** 方案C视觉层：AI 生成的每页独立视觉背景图（背景+装饰+配图，不含文字） */
+  visual_image_path: string;
+  /** 最终合成图（视觉层+文字层） */
   image_path: string;
   image_versions: string[];
   status: string;
